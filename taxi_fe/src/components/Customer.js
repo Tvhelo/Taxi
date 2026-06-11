@@ -8,12 +8,15 @@ function Customer(props) {
   let [pickupAddress, setPickupAddress] = useState("Tecnologico de Monterrey, campus Puebla, Mexico");
   let [dropOffAddress, setDropOffAddress] = useState("Triangulo Las Animas, Puebla, Mexico");
   let [msg, setMsg] = useState("");
+  let [msg1, setMsg1] = useState("");
+  let [bookingId, setBookingId] = useState("");
 
   useEffect(() => {
     let channel = socket.channel("customer:" + props.username, {token: "123"});
     channel.on("greetings", data => console.log(data));
     channel.on("booking_request", data => {
       console.log("Received", data);
+      setBookingId(data.booking_id);
       setMsg(data.msg);
     });
     channel.join();
@@ -21,6 +24,17 @@ function Customer(props) {
 
   let submit = () => {
     fetch(`http://localhost:4000/api/bookings`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pickup_address: pickupAddress, dropoff_address: dropOffAddress, username: props.username})
+    }).then(resp => resp.json()).then(data => setMsg(data.msg));
+    console.log(data);
+    setMsg(data.msg);
+  };
+
+  let cancel = () => {
+    console.log(`http://localhost:4000/api/bookings/cancel/${bookingId}`);
+    fetch(`http://localhost:4000/api/bookings/cancel/${bookingId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({pickup_address: pickupAddress, dropoff_address: dropOffAddress, username: props.username})
@@ -40,6 +54,7 @@ function Customer(props) {
             onChange={ev => setDropOffAddress(ev.target.value)}
             value={dropOffAddress}/>
         <Button onClick={submit} variant="outlined" color="primary">Submit</Button>
+        <Button onClick={cancel} variant="outlined" color="secondary">Cancel</Button>
       </div>
       <div style={{backgroundColor: "lightcyan", height: "50px"}}>
         {msg}

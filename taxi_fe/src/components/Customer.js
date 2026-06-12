@@ -10,6 +10,7 @@ function Customer(props) {
   let [msg, setMsg] = useState("");
   let [bookingId, setBookingId] = useState("");
   let [status, setStatus] = useState("idle");
+  let [cancellationFee, setCancellationFee] = useState(null);
 
   useEffect(() => {
     let channel = socket.channel("customer:" + props.username, {token: "123"});
@@ -21,6 +22,9 @@ function Customer(props) {
       }
       if (data.status) {
         setStatus(data.status);
+      }
+      if (data.cancellation_fee !== undefined) {
+        setCancellationFee(data.cancellation_fee);
       }
       setMsg(data.msg);
     });
@@ -42,6 +46,7 @@ function Customer(props) {
         setBookingId(data.booking_id);
       }
       setStatus(data.booking_id ? "created" : "error");
+      setCancellationFee(null);
       setMsg(data.msg);
     });
   };
@@ -59,6 +64,9 @@ function Customer(props) {
     }).then(resp => resp.json()).then(data => {
       setBookingId("");
       setStatus(data.status || "cancelled");
+      if (data.cancellation_fee !== undefined) {
+        setCancellationFee(data.cancellation_fee);
+      }
       setMsg(data.msg);
     });
   };
@@ -78,11 +86,14 @@ function Customer(props) {
         <Button onClick={submit} variant="outlined" color="primary">Submit</Button>
         <Button onClick={cancel} variant="outlined" color="secondary">Cancel</Button>
       </div>
-      <div style={{backgroundColor: "lightcyan", height: "50px"}}>
+      <div style={{backgroundColor: "lightcyan", minHeight: "50px"}}>
         {msg}
       </div>
       <div>
         Estado: {status}
+      </div>
+      <div>
+        {cancellationFee !== null ? `Cargo de cancelacion: $${Number(cancellationFee).toFixed(2)}` : null}
       </div>
       <div>
         {bookingId ? `Booking: ${bookingId}` : null}

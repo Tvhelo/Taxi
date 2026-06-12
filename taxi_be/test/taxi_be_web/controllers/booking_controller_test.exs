@@ -29,15 +29,23 @@ defmodule TaxiBeWeb.BookingControllerTest do
 
     assert %{
              "driver" => "frodo",
+             "accepted_at" => accepted_at,
              "eta_minutes" => 5,
              "fare" => 80.0,
              "status" => "accepted"
            } = json_response(conn, 200)
 
+    assert {:ok, _accepted_at, 0} = DateTime.from_iso8601(accepted_at)
+
     assert_receive %Phoenix.Socket.Broadcast{
       topic: "customer:luciano",
       event: "booking_request",
-      payload: %{booking_id: ^booking_id, status: "accepted", eta_minutes: 5}
+      payload: %{
+        booking_id: ^booking_id,
+        status: "accepted",
+        eta_minutes: 5,
+        accepted_at: ^accepted_at
+      }
     }
 
     assert_cancelled_for_other_drivers(booking_id, "frodo")
@@ -230,7 +238,7 @@ defmodule TaxiBeWeb.BookingControllerTest do
              json_response(conn, 409)
   end
 
-  test "lets the booking customer cancel an active request", %{conn: conn} do
+  test "lets the booking customer cancel before any driver accepts with no charge", %{conn: conn} do
     subscribe_customer_and_drivers("luciano")
 
     conn = post(conn, ~p"/api/bookings", @booking_params)
@@ -243,7 +251,12 @@ defmodule TaxiBeWeb.BookingControllerTest do
       build_conn()
       |> post(~p"/api/bookings/#{booking_id}", %{action: "cancel", username: "luciano"})
 
-    assert %{"status" => "cancelled"} = json_response(conn, 200)
+    assert %{
+             "status" => "cancelled",
+             "charged" => false,
+             "cancellation_fee" => 0.0,
+             "msg" => "Reservacion cancelada sin cargo."
+           } = json_response(conn, 200)
 
     Enum.each(@drivers, fn driver ->
       assert_receive %Phoenix.Socket.Broadcast{
@@ -256,7 +269,121 @@ defmodule TaxiBeWeb.BookingControllerTest do
     assert_receive %Phoenix.Socket.Broadcast{
       topic: "customer:luciano",
       event: "booking_request",
-      payload: %{booking_id: ^booking_id, status: "cancelled"}
+      payload: %{
+        booking_id: ^booking_id,
+        status: "cancelled",
+        cancellation_fee: 0.0,
+        charged: false
+      }
+    }
+  end
+
+  test "lets the booking customer cancel after acceptance before the charge window with no charge",
+       %{conn: conn} do
+    subscribe_customer_and_drivers("luciano")
+
+    conn = post(conn, ~p"/api/bookings", @booking_params)
+    booking_id = json_response(conn, 201)["booking_id"]
+
+    assert_initial_customer_messages(booking_id, "luciano")
+    assert_driver_requests(booking_id)
+
+    conn =
+      build_conn()
+      |> post(~p"/api/bookings/#{booking_id}", %{action: "accept", username: "frodo"})
+
+    assert %{"status" => "accepted", "driver" => "frodo"} = json_response(conn, 200)
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "customer:luciano",
+      event: "booking_request",
+      payload: %{booking_id: ^booking_id, status: "accepted", driver: "frodo"}
+    }
+
+    assert_cancelled_for_other_drivers(booking_id, "frodo")
+
+    conn =
+      build_conn()
+      |> post(~p"/api/bookings/#{booking_id}", %{action: "cancel", username: "luciano"})
+
+    assert %{
+             "status" => "cancelled",
+             "charged" => false,
+             "cancellation_fee" => 0.0,
+             "msg" => "Reservacion cancelada sin cargo."
+           } = json_response(conn, 200)
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "driver:frodo",
+      event: "booking_request",
+      payload: %{
+        booking_id: ^booking_id,
+        status: "cancelled",
+        cancellation_fee: 0.0,
+        charged: false
+      }
+    }
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "customer:luciano",
+      event: "booking_request",
+      payload: %{
+        booking_id: ^booking_id,
+        status: "cancelled",
+        cancellation_fee: 0.0,
+        charged: false
+      }
+    }
+  end
+
+  test "charges cancellation fee when three minutes or less remain to arrival", %{conn: conn} do
+    Phoenix.PubSub.subscribe(TaxiBe.PubSub, "customer:luciano")
+    Phoenix.PubSub.subscribe(TaxiBe.PubSub, "driver:samwise")
+
+    conn = post(conn, ~p"/api/bookings", @booking_params)
+    booking_id = json_response(conn, 201)["booking_id"]
+
+    assert_initial_customer_messages(booking_id, "luciano")
+
+    conn =
+      build_conn()
+      |> post(~p"/api/bookings/#{booking_id}", %{action: "accept", username: "samwise"})
+
+    assert %{"status" => "accepted", "driver" => "samwise", "accepted_at" => accepted_at} =
+             json_response(conn, 200)
+
+    assert {:ok, accepted_at, 0} = DateTime.from_iso8601(accepted_at)
+
+    cancellation_time = DateTime.add(accepted_at, 2 * 60, :second)
+
+    assert {:ok,
+            %{
+              status: "cancelled",
+              charged: true,
+              cancellation_fee: 20.0,
+              msg: "Reservacion cancelada. Se aplico un cargo de $20.00."
+            }} = TaxiAllocationJob.cancel_booking(booking_id, "luciano", cancellation_time)
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "driver:samwise",
+      event: "booking_request",
+      payload: %{
+        booking_id: ^booking_id,
+        status: "cancelled",
+        cancellation_fee: 20.0,
+        charged: true
+      }
+    }
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "customer:luciano",
+      event: "booking_request",
+      payload: %{
+        booking_id: ^booking_id,
+        status: "cancelled",
+        cancellation_fee: 20.0,
+        charged: true
+      }
     }
   end
 

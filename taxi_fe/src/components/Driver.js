@@ -26,6 +26,7 @@ function Driver(props) {
             bookingId: bookingId,
             message: data.msg,
             status: data.status || "requested",
+            cancellationFee: data.cancellation_fee,
             visible: data.status === "requested"
           }
         }));
@@ -58,6 +59,7 @@ function Driver(props) {
           bookingId: bookingId,
           message: data.msg,
           status: data.status || decision,
+          cancellationFee: data.cancellation_fee,
           visible: false
         }
       }));
@@ -79,6 +81,11 @@ function Driver(props) {
                   <Typography>Booking: {request.bookingId}</Typography>
                   <Typography>{request.message}</Typography>
                   <Typography>Estado: {request.status}</Typography>
+                  {
+                    request.cancellationFee !== undefined ?
+                    <Typography>Cargo de cancelacion: ${Number(request.cancellationFee).toFixed(2)}</Typography> :
+                    null
+                  }
                 </CardContent>
                 {
                   request.visible ?

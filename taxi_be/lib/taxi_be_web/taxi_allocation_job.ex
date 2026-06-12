@@ -4,9 +4,11 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
   require Logger
 
   @allocation_timeout_ms 90_000
-  @cleanup_ms 90_000
+  @cleanup_ms 600_000
   @fare 80.0
   @eta_minutes 5
+  @cancellation_fee 20.0
+  @cancellation_fee_window_minutes 3
 
   def start_booking(request) do
     booking_id = UUID.uuid4()
@@ -34,7 +36,11 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
   end
 
   def cancel_booking(booking_id, username) do
-    reply(booking_id, {:customer_cancel, username})
+    cancel_booking(booking_id, username, DateTime.utc_now())
+  end
+
+  def cancel_booking(booking_id, username, now) do
+    reply(booking_id, {:customer_cancel, username, now})
   end
 
   def start_link(request) do
@@ -56,6 +62,9 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
        pending_drivers: MapSet.new(),
        rejected_drivers: MapSet.new(),
        accepted_driver: nil,
+       accepted_at: nil,
+       eta_minutes: @eta_minutes,
+       cancellation_fee: 0.0,
        timer_ref: nil,
        cleanup_ref: nil
      }}
@@ -139,13 +148,15 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
       true ->
         Logger.info("Booking #{state.booking_id}: accepted by #{username}")
 
-        payload = accepted_payload(state, username)
+        accepted_at = DateTime.utc_now()
+        payload = accepted_payload(state, username, accepted_at)
 
         state =
           state
           |> clear_timer()
           |> Map.put(:status, :accepted)
           |> Map.put(:accepted_driver, username)
+          |> Map.put(:accepted_at, accepted_at)
           |> Map.put(:pending_drivers, MapSet.delete(state.pending_drivers, username))
           |> notify_customer(payload)
           |> notify_other_pending_drivers(username, %{
@@ -217,10 +228,14 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
     end
   end
 
-  def handle_call({:customer_cancel, username}, _from, state) do
+  def handle_call({:customer_cancel, username, now}, _from, state) do
     case state.request["username"] == username do
       true ->
-        Logger.info("Booking #{state.booking_id}: cancelled by #{username}")
+        cancellation = cancellation_result(state, now)
+
+        Logger.info(
+          "Booking #{state.booking_id}: cancelled by #{username} with fee $#{format_money(cancellation.fee)}"
+        )
 
         state =
           state
@@ -231,12 +246,21 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
             booking_id: state.booking_id,
             bookingId: state.booking_id
           })
+          |> notify_assigned_driver(%{
+            status: "cancelled",
+            msg: "El cliente cancelo el viaje.",
+            booking_id: state.booking_id,
+            bookingId: state.booking_id,
+            cancellation_fee: cancellation.fee,
+            charged: cancellation.charged
+          })
           |> Map.put(:status, :cancelled)
           |> Map.put(:pending_drivers, MapSet.new())
-          |> notify_customer(%{status: "cancelled", msg: "Reservacion cancelada."})
+          |> Map.put(:cancellation_fee, cancellation.fee)
+          |> notify_customer(cancelled_payload(cancellation))
           |> schedule_cleanup()
 
-        {:reply, {:ok, %{status: "cancelled", msg: "Reservacion cancelada."}}, state}
+        {:reply, {:ok, cancelled_payload(cancellation)}, state}
 
       false ->
         {:reply, {:error, :not_booking_customer}, state}
@@ -312,13 +336,14 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
      |> Map.put(:timer_ref, timer_ref)}
   end
 
-  defp accepted_payload(state, username) do
+  defp accepted_payload(state, username, accepted_at) do
     %{
       status: "accepted",
       driver: username,
-      eta_minutes: @eta_minutes,
+      eta_minutes: state.eta_minutes,
+      accepted_at: DateTime.to_iso8601(accepted_at),
       fare: state.fare,
-      msg: "Tu conductor #{username} acepto. Llegara en #{@eta_minutes} min."
+      msg: "Tu conductor #{username} acepto. Llegara en #{state.eta_minutes} min."
     }
   end
 
@@ -334,8 +359,13 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
     %{status: "finished", msg: "La reservacion ya finalizo sin conductor."}
   end
 
-  defp ignored_payload(%{status: :cancelled}) do
-    %{status: "cancelled", msg: "La reservacion fue cancelada."}
+  defp ignored_payload(%{status: :cancelled, cancellation_fee: fee}) do
+    %{
+      status: "cancelled",
+      cancellation_fee: fee,
+      charged: fee > 0,
+      msg: "La reservacion fue cancelada."
+    }
   end
 
   defp ignored_payload(_state), do: %{status: "ignored", msg: "Respuesta ignorada."}
@@ -379,6 +409,13 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
     state
   end
 
+  defp notify_assigned_driver(%{accepted_driver: nil} = state, _payload), do: state
+
+  defp notify_assigned_driver(state, payload) do
+    broadcast_driver(state.accepted_driver, payload)
+    state
+  end
+
   defp notify_other_pending_drivers(state, accepted_driver, payload) do
     state.pending_drivers
     |> MapSet.delete(accepted_driver)
@@ -410,6 +447,38 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
 
   defp cleanup_ms do
     Application.get_env(:taxi_be, :allocation_cleanup_ms, @cleanup_ms)
+  end
+
+  defp cancellation_result(%{status: :accepted, accepted_at: accepted_at, eta_minutes: eta}, now)
+       when not is_nil(accepted_at) do
+    arrival_at = DateTime.add(accepted_at, eta * 60, :second)
+    remaining_seconds = DateTime.diff(arrival_at, now, :second)
+    charged = remaining_seconds <= @cancellation_fee_window_minutes * 60
+
+    %{
+      charged: charged,
+      fee: if(charged, do: @cancellation_fee, else: 0.0)
+    }
+  end
+
+  defp cancellation_result(_state, _now), do: %{charged: false, fee: 0.0}
+
+  defp cancelled_payload(%{charged: true, fee: fee}) do
+    %{
+      status: "cancelled",
+      cancellation_fee: fee,
+      charged: true,
+      msg: "Reservacion cancelada. Se aplico un cargo de $#{format_money(fee)}."
+    }
+  end
+
+  defp cancelled_payload(%{fee: fee}) do
+    %{
+      status: "cancelled",
+      cancellation_fee: fee,
+      charged: false,
+      msg: "Reservacion cancelada sin cargo."
+    }
   end
 
   defp format_money(amount), do: :erlang.float_to_binary(amount, decimals: 2)

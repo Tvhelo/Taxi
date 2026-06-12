@@ -6,18 +6,30 @@ import { Card, CardContent, Typography } from '@mui/material';
 
 function Driver(props) {
   let [message, setMessage] = useState();
-  let [bookingId, setBookingId] = useState();
-  let [visible, setVisible] = useState(false);
   let [status, setStatus] = useState("idle");
+  let [requests, setRequests] = useState({});
 
   useEffect(() => {
     let channel = socket.channel("driver:" + props.username, {token: "123"});
     channel.on("booking_request", data => {
       console.log("Received", data);
+      let bookingId = data.booking_id || data.bookingId;
+
       setMessage(data.msg);
-      setBookingId(data.booking_id || data.bookingId);
       setStatus(data.status || "requested");
-      setVisible(data.status === "requested");
+
+      if (bookingId) {
+        setRequests(previous => ({
+          ...previous,
+          [bookingId]: {
+            ...(previous[bookingId] || {}),
+            bookingId: bookingId,
+            message: data.msg,
+            status: data.status || "requested",
+            visible: data.status === "requested"
+          }
+        }));
+      }
     });
     channel.join()
       .receive("ok", () => console.log("Joined driver channel", props.username))
@@ -27,7 +39,7 @@ function Driver(props) {
     return () => channel.leave();
   },[props.username]);
 
-  let reply = (decision) => {
+  let reply = (decision, bookingId) => {
     if (!bookingId) {
       return;
     }
@@ -39,27 +51,45 @@ function Driver(props) {
     }).then(resp => resp.json()).then(data => {
       setMessage(data.msg);
       setStatus(data.status || decision);
-      setBookingId();
-      setVisible(false);
+      setRequests(previous => ({
+        ...previous,
+        [bookingId]: {
+          ...(previous[bookingId] || {}),
+          bookingId: bookingId,
+          message: data.msg,
+          status: data.status || decision,
+          visible: false
+        }
+      }));
     });
   };
+
+  let requestList = Object.values(requests);
 
   return (
     <div style={{textAlign: "center", borderStyle: "solid"}}>
         Driver: {props.username}
         <div>Estado: {status}</div>
-        <div style={{backgroundColor: "lavender", height: "100px"}}>
+        <div style={{backgroundColor: "lavender", minHeight: "100px"}}>
           <Typography>{message}</Typography>
           {
-            visible ?
-            <Card variant="outlined" style={{margin: "auto", width: "600px"}}>
-              <CardContent>
-                <Typography>Booking: {bookingId}</Typography>
-              </CardContent>
-              <Button onClick={() => reply("accept")} variant="outlined" color="primary">Accept</Button>
-              <Button onClick={() => reply("reject")} variant="outlined" color="secondary">Reject</Button>
-            </Card> :
-            null
+            requestList.map(request =>
+              <Card key={request.bookingId} variant="outlined" style={{margin: "8px auto", width: "600px"}}>
+                <CardContent>
+                  <Typography>Booking: {request.bookingId}</Typography>
+                  <Typography>{request.message}</Typography>
+                  <Typography>Estado: {request.status}</Typography>
+                </CardContent>
+                {
+                  request.visible ?
+                  <>
+                    <Button onClick={() => reply("accept", request.bookingId)} variant="outlined" color="primary">Accept</Button>
+                    <Button onClick={() => reply("reject", request.bookingId)} variant="outlined" color="secondary">Reject</Button>
+                  </> :
+                  null
+                }
+              </Card>
+            )
           }
         </div>
     </div>

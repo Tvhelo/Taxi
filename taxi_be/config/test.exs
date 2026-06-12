@@ -22,3 +22,7 @@ config :phoenix, :plug_init_mode, :runtime
 config :phoenix_live_view,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
+
+config :taxi_be,
+  allocation_timeout_ms: 100,
+  allocation_cleanup_ms: 1_000

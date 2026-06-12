@@ -8,37 +8,59 @@ function Customer(props) {
   let [pickupAddress, setPickupAddress] = useState("Tecnologico de Monterrey, campus Puebla, Mexico");
   let [dropOffAddress, setDropOffAddress] = useState("Triangulo Las Animas, Puebla, Mexico");
   let [msg, setMsg] = useState("");
-  let [msg1, setMsg1] = useState("");
   let [bookingId, setBookingId] = useState("");
+  let [status, setStatus] = useState("idle");
 
   useEffect(() => {
     let channel = socket.channel("customer:" + props.username, {token: "123"});
     channel.on("greetings", data => console.log(data));
     channel.on("booking_request", data => {
       console.log("Received", data);
-      setBookingId(data.booking_id);
+      if (data.booking_id || data.bookingId) {
+        setBookingId(data.booking_id || data.bookingId);
+      }
+      if (data.status) {
+        setStatus(data.status);
+      }
       setMsg(data.msg);
     });
-    channel.join();
-  },[props]);
+    channel.join()
+      .receive("ok", () => console.log("Joined customer channel", props.username))
+      .receive("error", error => console.error("Customer channel join failed", error))
+      .receive("timeout", () => console.error("Customer channel join timed out"));
+
+    return () => channel.leave();
+  },[props.username]);
 
   let submit = () => {
     fetch(`http://localhost:4000/api/bookings`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({pickup_address: pickupAddress, dropoff_address: dropOffAddress, username: props.username})
-    }).then(resp => resp.json()).then(data => setMsg(data.msg));
-    console.log(data);
-    setMsg(data.msg);
+    }).then(resp => resp.json()).then(data => {
+      if (data.booking_id) {
+        setBookingId(data.booking_id);
+      }
+      setStatus(data.booking_id ? "created" : "error");
+      setMsg(data.msg);
+    });
   };
 
   let cancel = () => {
-    console.log(`http://localhost:4000/api/bookings/cancel/${bookingId}`);
-    fetch(`http://localhost:4000/api/bookings/cancel/${bookingId}`, {
+    if (!bookingId) {
+      setMsg("No hay reservacion activa para cancelar.");
+      return;
+    }
+
+    fetch(`http://localhost:4000/api/bookings/${bookingId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pickup_address: pickupAddress, dropoff_address: dropOffAddress, username: props.username})
-    }).then(resp => resp.json()).then(data => setMsg(data.msg));
+      body: JSON.stringify({action: "cancel", username: props.username})
+    }).then(resp => resp.json()).then(data => {
+      setBookingId("");
+      setStatus(data.status || "cancelled");
+      setMsg(data.msg);
+    });
   };
 
   return (
@@ -58,6 +80,12 @@ function Customer(props) {
       </div>
       <div style={{backgroundColor: "lightcyan", height: "50px"}}>
         {msg}
+      </div>
+      <div>
+        Estado: {status}
+      </div>
+      <div>
+        {bookingId ? `Booking: ${bookingId}` : null}
       </div>
     </div>
   );

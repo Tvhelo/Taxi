@@ -5,11 +5,19 @@ defmodule TaxiBeWeb.Router do
     plug :accepts, ["json"]
   end
 
+  scope "/", TaxiBeWeb do
+    pipe_through :api
+
+    get "/", StatusController, :index
+  end
+
   scope "/api", TaxiBeWeb do
     pipe_through :api
 
     post "/bookings", BookingController, :create
     post "/bookings/:id", BookingController, :update
+    post "/bookings/:id/cancel", BookingController, :cancel
+    post "/bookings/cancel/:id", BookingController, :cancel
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
